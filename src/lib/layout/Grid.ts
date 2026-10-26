@@ -170,7 +170,7 @@ class Grid {
         this.columnsSetX(rightColumn);
 
         this.desktop.onLayoutChanged();
-        this.desktop.autoAdjustScroll();
+        this.desktop.requestAutoAdjustScroll();
         if (columnToFocus !== null) {
             switch (passFocus) {
             case FocusPassing.Type.Immediate:

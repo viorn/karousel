@@ -5,6 +5,7 @@ class Desktop {
     private dirty: boolean;
     private dirtyScroll: boolean;
     private dirtyPins: boolean;
+    private autoAdjustScrollPending: boolean;
     public clientArea: QmlRect;
     public tilingArea: QmlRect;
 
@@ -21,6 +22,7 @@ class Desktop {
         this.dirty = true;
         this.dirtyScroll = true;
         this.dirtyPins = true;
+        this.autoAdjustScrollPending = false;
         this.grid = new Grid(this, layoutConfig, focusPasser);
         this.clientArea = Desktop.getClientArea(this.getScreen(), kwinDesktop);
         this.tilingArea = Desktop.getTilingArea(this.clientArea, kwinDesktop, pinManager, config);
@@ -96,7 +98,12 @@ class Desktop {
         this.scrollToColumn(focusedColumn, false);
     }
 
+    public requestAutoAdjustScroll() {
+        this.autoAdjustScrollPending = true;
+    }
+
     public scrollToColumn(column: Column, force: boolean) {
+        this.autoAdjustScrollPending = false;
         if (force || this.dirtyScroll || !Range.contains(this.getCurrentVisibleRange(), column)) {
             this.config.scroller.scrollToColumn(this, column);
         }
@@ -115,6 +122,7 @@ class Desktop {
     }
 
     public setScroll(x: number, force: boolean) {
+        this.autoAdjustScrollPending = false;
         const oldScrollX = this.scrollX;
         this.scrollX = force ? x : this.clampScrollX(x);
         if (this.scrollX !== oldScrollX) {
@@ -160,6 +168,10 @@ class Desktop {
     public arrange() {
         // TODO (optimization): only arrange visible windows
         this.updateArea();
+        if (this.autoAdjustScrollPending) {
+            this.autoAdjustScrollPending = false;
+            this.autoAdjustScroll();
+        }
         if (!this.dirty) {
             return;
         }
