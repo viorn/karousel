@@ -142,8 +142,12 @@ class World {
         this.windowActivatedHandler.requestActivation(kwinClient);
     }
 
-    public cancelWindowActivation() {
-        this.windowActivatedHandler.cancel();
+    public onClientRemoved(removedClient: KwinClient) {
+        if (this.clientManager.willPassFocusOnRemove(removedClient)) {
+            // The removed window was tiled and had focus.
+            // Cancel the activation of Kwin's focus passing selection, so that Karousel can do the selection.
+            this.windowActivatedHandler.cancel();
+        }
     }
 
     public gestureScroll(amount: number) {
