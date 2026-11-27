@@ -180,6 +180,10 @@ const configDef = [
         default: 1920,
     },
     {
+        name: "gestureScrollFocus",
+        type: "Bool",
+        default: true,
+    },    {
         name: "tiledKeepBelow",
         type: "Bool",
         default: true,

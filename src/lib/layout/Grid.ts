@@ -135,6 +135,38 @@ class Grid {
         }
     }
 
+    // The column the user is most likely looking at: an entirely visible column whose center is
+    // the closest to the center of the visible area. Partially visible columns are only considered
+    // when no column is entirely visible (which can happen with columns as wide as the screen).
+    // On a tie, the last focused column wins, so that the focus doesn't wander when the visible
+    // area is exactly between two columns.
+    public getColumnInView(visibleRange: Range) {
+        return this.getColumnClosestToCenter(visibleRange, true) ?? this.getColumnClosestToCenter(visibleRange, false);
+    }
+
+    private getColumnClosestToCenter(visibleRange: Range, entirelyVisibleOnly: boolean) {
+        const visibleCenter = Range.center(visibleRange);
+        const lastFocusedColumn = this.getLastFocusedColumn();
+        let columnInView: Column|null = null;
+        let smallestDistance = Infinity;
+        for (const column of this.columns.iterator()) {
+            const isVisible = entirelyVisibleOnly ? Range.contains(visibleRange, column) : Range.overlaps(visibleRange, column);
+            if (!isVisible) {
+                continue;
+            }
+            const distance = Math.abs(Range.center(column) - visibleCenter);
+            if (distance > smallestDistance) {
+                continue;
+            }
+            if (distance === smallestDistance && column !== lastFocusedColumn) {
+                continue;
+            }
+            columnInView = column;
+            smallestDistance = distance;
+        }
+        return columnInView;
+    }
+
     public arrange(x: number, visibleRange: Range) {
         for (const column of this.columns.iterator()) {
             column.arrange(x, visibleRange, this.userResize);

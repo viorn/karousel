@@ -26,6 +26,14 @@ namespace Range {
         return Math.round(aCenter - bCenter);
     }
 
+    export function center(range: Range) {
+        return range.getLeft() + range.getWidth() / 2;
+    }
+
+    export function overlaps(a: Range, b: Range) {
+        return a.getLeft() < b.getRight() && b.getLeft() < a.getRight();
+    }
+
     class Basic {
         constructor(
             private readonly x: number,

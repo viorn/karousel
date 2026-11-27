@@ -23,6 +23,7 @@ interface Config {
     gestureScroll: boolean;
     gestureScrollInvert: boolean;
     gestureScrollStep: number;
+    gestureScrollFocus: boolean;
     tiledKeepBelow: boolean;
     floatingKeepAbove: boolean;
     windowRules: string;

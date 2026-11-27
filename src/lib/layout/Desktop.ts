@@ -143,9 +143,25 @@ class Desktop {
 
     public gestureScrollFinish(focusedWindow: Window|null) {
         const scrolledRight = this.scrollX > this.gestureScrollXInitial!;
+        const scrolled = this.scrollX !== this.gestureScrollXInitial;
         this.gestureScrollXInitial = null;
 
         const visibleRange = this.getCurrentVisibleRange();
+        if (scrolled && this.config.gestureScrollFocus) {
+            // After a gesture the user is looking at the window in the middle of the screen, so
+            // focus it even if the previously focused window is still visible. Otherwise the focus
+            // stays on a window the user isn't looking at, and it gets restored (along with the
+            // scroll position) when the user leaves this desktop and comes back.
+            const columnInView = this.grid.getColumnInView(visibleRange);
+            if (columnInView !== null) {
+                const windowToFocus = columnInView.getWindowToFocus();
+                if (!windowToFocus.isFocused()) {
+                    windowToFocus.focus();
+                }
+                return;
+            }
+        }
+
         if (focusedWindow !== null && !Range.contains(visibleRange, focusedWindow.column)) {
             // the focused window is no longer visible, find a new window to focus
             const focusTargetColumn = scrolledRight ?
@@ -196,6 +212,7 @@ namespace Desktop {
         gestureScroll: boolean;
         gestureScrollInvert: boolean;
         gestureScrollStep: number;
+        gestureScrollFocus: boolean;
         scroller: Desktop.Scroller;
         clamper: Desktop.Clamper;
     }

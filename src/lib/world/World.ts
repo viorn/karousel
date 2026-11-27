@@ -66,6 +66,7 @@ class World {
                 gestureScroll: config.gestureScroll,
                 gestureScrollInvert: config.gestureScrollInvert,
                 gestureScrollStep: config.gestureScrollStep,
+                gestureScrollFocus: config.gestureScrollFocus,
             },
             layoutConfig,
             focusPasser,
