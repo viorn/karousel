@@ -120,13 +120,12 @@ on a window which was barely visible. Leaving the desktop and coming back then
 restored that stale focus, which also dragged the scroll position back to it.
 
 With `gestureScrollFocus` (enabled by default, `Touchpad scrolling` section of
-the settings) a finished gesture focuses the window which is entirely in view. If
-more than one is entirely in view, the one whose center is the closest to the
-center of the screen wins; on a tie the already focused window stays, so the
-focus doesn't flicker between two equally distant windows. When no window is
-entirely in view (columns as wide as the screen), the one closest to the center
-of the screen is focused instead. Gestures which don't scroll don't touch the
-focus.
+the settings) a finished gesture focuses the visible window whose center is the
+closest to the center of the screen — no need for the window to be entirely in
+view, a wide window which is only partially visible still wins over a narrow one
+at the edge. On a tie the already focused window stays, so the focus doesn't
+flicker between two equally distant windows. Gestures which don't scroll don't
+touch the focus.
 
 ### Minimum window height is respected
 Upstream splits a column evenly without looking at the clients' minimum heights

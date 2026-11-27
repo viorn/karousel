@@ -140,10 +140,10 @@
                                         <item>
                                             <widget class="QCheckBox" name="kcfg_gestureScrollFocus">
                                                 <property name="text">
-                                                    <string>Focus the window in view after a gesture</string>
+                                                    <string>Focus the window closest to the center after a gesture</string>
                                                 </property>
                                                 <property name="toolTip">
-                                                    <string>After a swipe, focus the window which is entirely in view and whose center is the closest to the center of the screen. Otherwise the focus stays on the window which was focused before the gesture, even if it's only partially visible.</string>
+                                                    <string>After a swipe, focus the visible window whose center is the closest to the center of the screen. Otherwise the focus stays on the window which was focused before the gesture, even if it is barely visible.</string>
                                                 </property>
                                             </widget>
                                         </item>

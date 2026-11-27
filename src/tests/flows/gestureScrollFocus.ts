@@ -4,8 +4,7 @@ tests.register("Gesture scroll focus", 15, () => {
     config.gestureScrollFocus = true;
     config.gestureScrollStep = 1; // scroll by pixels, so the amounts below are easy to read
 
-    // Scrolling to a window which is entirely in view focuses it, even if the previously focused
-    // window is still visible
+    // Scrolling to a window focuses it, even if the previously focused window is still visible
     {
         const { qtMock, workspaceMock, world } = init(config);
         const [client1, client2, client3] = workspaceMock.createClientsWithWidths(384, 768, 384);
@@ -26,8 +25,24 @@ tests.register("Gesture scroll focus", 15, () => {
         Assert.assert(workspaceMock.activeWindow === client1);
     }
 
-    // When more than one window is entirely in view, the one whose center is the closest to the
-    // center of the screen is focused. Client4 is focused (and 100 wide, at the right edge) to
+    // A window doesn't have to be entirely in view: a wide window which is only partially visible
+    // still wins over a narrow window which is entirely visible, if its center is closer to the
+    // center of the screen
+    {
+        const { qtMock, workspaceMock, world } = init(config);
+        const [client1, client2, client3] = workspaceMock.createClientsWithWidths(200, 700, 400);
+        Assert.assert(workspaceMock.activeWindow === client3);
+
+        // scrolled to the left edge: client1 is entirely in view, but client2 is centered
+        world.gestureScroll(-548);
+        world.gestureScrollFinish();
+        Assert.assert(workspaceMock.activeWindow === client2);
+        // focusing the lazy way also scrolls the focused window entirely into view
+        Assert.equal(rectRight(client2.getActualFrameGeometry()), rectRight(tilingArea));
+    }
+
+    // When more than one window is in view, the one whose center is the closest to the center of
+    // the screen is focused. Client4 is focused (and 100 wide, at the right edge) to
     // start with, so the gesture below moves the view by a single pixel.
     {
         const { qtMock, workspaceMock, world } = init(config);
@@ -70,8 +85,8 @@ tests.register("Gesture scroll focus", 15, () => {
         Assert.assert(workspaceMock.activeWindow === client2);
     }
 
-    // When no window is entirely in view (columns as wide as the screen), the one closest to the
-    // center of the screen is focused
+    // Columns as wide as the screen: the one whose center is the closest to the center of the
+    // screen is focused
     {
         const { qtMock, workspaceMock, world } = init(config);
         const [client1, client2] = workspaceMock.createClientsWithWidths(768, 768);
