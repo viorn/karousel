@@ -124,8 +124,9 @@ the settings) a finished gesture focuses the visible window whose center is the
 closest to the center of the screen — no need for the window to be entirely in
 view, a wide window which is only partially visible still wins over a narrow one
 at the edge. On a tie the already focused window stays, so the focus doesn't
-flicker between two equally distant windows. Gestures which don't scroll don't
-touch the focus.
+flicker between two equally distant windows. The focused window is then scrolled
+entirely into view, exactly as if it had been clicked. Gestures which don't
+scroll don't touch the focus.
 
 ### Minimum window height is respected
 Upstream splits a column evenly without looking at the clients' minimum heights

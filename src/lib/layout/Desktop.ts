@@ -157,6 +157,10 @@ class Desktop {
                 const windowToFocus = columnInView.getWindowToFocus();
                 if (!windowToFocus.isFocused()) {
                     windowToFocus.focus();
+                    // `focus()` only scrolls the window into view through the `windowActivated`
+                    // signal, which is asynchronous and doesn't always arrive in time, so scroll
+                    // explicitly — the same way focusing the window by clicking it does.
+                    this.scrollToColumn(columnInView, true);
                 }
                 return;
             }
@@ -169,6 +173,7 @@ class Desktop {
                 this.grid.getRightmostVisibleColumn(visibleRange);
             if (focusTargetColumn !== null) {
                 focusTargetColumn.getWindowToFocus().focus();
+                this.scrollToColumn(focusTargetColumn, true);
             }
         }
     }
