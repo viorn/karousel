@@ -84,3 +84,37 @@ Here's the default ones:
 | Meta+Ctrl+Shift+[N]      | Move column to position N (Requires manual remapping according to your keyboard layout, e.g. Meta+Ctrl+Shift+1 -> Meta+Ctrl+!) |
 | Meta+Ctrl+Shift+F[N]     | Move column to desktop N                                                                                                       |
 | Meta+Ctrl+Shift+Alt+F[N] | Move this and all following columns to desktop N                                                                               |
+
+## Changes in this fork
+
+Personal fork of [peterfajdiga/karousel](https://github.com/peterfajdiga/karousel).
+Upstream is kept as the `upstream` remote, this fork is `origin`.
+
+### KDE-safe default shortcuts
+
+Several upstream defaults collide with stock Plasma 6 shortcuts, and since an
+existing KDE binding always wins, those actions silently end up with no key at
+all (`focus-right`/`focus-up`/`focus-down`, `focus-1..9`, `cycle-preset-widths`,
+`cycle-preset-widths-reverse`). This fork moves them to a vim-style set that is
+free on a stock KDE setup, without touching any KDE default:
+
+| Action                        | Upstream                 | This fork                |
+| ----------------------------- | ------------------------ | ------------------------ |
+| `focus-left`                  | `Meta+A`                 | `Meta+Ctrl+H`            |
+| `focus-down`                  | `Meta+S`                 | `Meta+Ctrl+J`            |
+| `focus-up`                    | `Meta+W`                 | `Meta+Ctrl+K`            |
+| `focus-right`                 | `Meta+D`                 | `Meta+Ctrl+L`            |
+| `focus-N` (N = 1..9)          | `Meta+N`                 | `Meta+Ctrl+N`            |
+| `cycle-preset-widths`         | `Meta+R`                 | `Meta+Ctrl+W`            |
+| `cycle-preset-widths-reverse` | `Meta+Shift+R`           | `Meta+Ctrl+Shift+W`      |
+
+`column-width-increase`/`decrease` keep `Meta+Ctrl++` / `Meta+Ctrl+-` — note
+that `+` requires Shift on most layouts, so on a regular keyboard only the
+numpad `+` and `cycle-preset-widths` are practical ways to widen a column.
+
+### Install
+
+```bash
+make install            # build (lint + tests + tsc) and install into ~/.local/share/kwin/scripts
+karousel-toolbox ...    # optional: wrapper used to manage install/uninstall/backups
+```
