@@ -9,28 +9,25 @@ function getKeyBindings(world: World, actions: Actions): KeyBinding[] {
         {
             name: "focus-left",
             description: "Move focus left",
-            defaultKeySequence: "Meta+A",
+            defaultKeySequence: "Meta+Ctrl+H",
             action: () => world.doIfTiledFocused(actions.focusLeft),
         },
         {
             name: "focus-right",
             description: "Move focus right",
-            comment: "Clashes with default KDE shortcuts, may require manual remapping",
-            defaultKeySequence: "Meta+D",
+            defaultKeySequence: "Meta+Ctrl+L",
             action: () => world.doIfTiledFocused(actions.focusRight),
         },
         {
             name: "focus-up",
             description: "Move focus up",
-            comment: "Clashes with default KDE shortcuts, may require manual remapping",
-            defaultKeySequence: "Meta+W",
+            defaultKeySequence: "Meta+Ctrl+K",
             action: () => world.doIfTiledFocused(actions.focusUp),
         },
         {
             name: "focus-down",
             description: "Move focus down",
-            comment: "Clashes with default KDE shortcuts, may require manual remapping",
-            defaultKeySequence: "Meta+S",
+            defaultKeySequence: "Meta+Ctrl+J",
             action: () => world.doIfTiledFocused(actions.focusDown),
         },
         {
@@ -179,13 +176,13 @@ function getKeyBindings(world: World, actions: Actions): KeyBinding[] {
         {
             name: "cycle-preset-widths",
             description: "Cycle through preset column widths",
-            defaultKeySequence: "Meta+R",
+            defaultKeySequence: "Meta+Ctrl+W",
             action: () => world.doIfTiledFocused(actions.cyclePresetWidths),
         },
         {
             name: "cycle-preset-widths-reverse",
             description: "Cycle through preset column widths in reverse",
-            defaultKeySequence: "Meta+Shift+R",
+            defaultKeySequence: "Meta+Ctrl+Shift+W",
             action: () => world.doIfTiledFocused(actions.cyclePresetWidthsReverse),
         },
         {
@@ -274,8 +271,7 @@ function getNumKeyBindings(world: World, actions: Actions): NumKeyBinding[] {
         {
             name: "focus-{}",
             description: "Move focus to column {}",
-            comment: "Clashes with default KDE shortcuts, may require manual remapping",
-            defaultModifiers: "Meta",
+            defaultModifiers: "Meta+Ctrl",
             fKeys: false,
             action: (i: number) => world.do(actions.focus.partial(i)),
         },
