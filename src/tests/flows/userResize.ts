@@ -77,9 +77,12 @@ tests.register("User resize", 10, () => {
         workspaceMock.resizeWindow(clientRightTop, true, true, false, new MockQmlSize(-10, 0));
         assertSizes(310, 295, h-20, h+20);
 
-        // TODO
-        // workspaceMock.resizeWindow(clientRightBottom, true, false, true, new MockQmlSize(0, -80));
-        // assertSizes(310, 295, h+60, h-20);
+        // Dragging the top edge of the bottom window up is limited by its minimum height
+        workspaceMock.resizeWindow(clientRightBottom, true, false, true, new MockQmlSize(0, -80));
+        assertSizes(310, 295, h, h);
+
+        workspaceMock.resizeWindow(clientRightBottom, true, false, true, new MockQmlSize(0, -80));
+        assertSizes(310, 295, h, h);
     }
 
     {

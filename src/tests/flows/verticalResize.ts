@@ -162,4 +162,56 @@ tests.register("Vertical resize", 10, () => {
             Assert.equal(g3n1.height, g3n2.height);
         }
     }
+
+    // Minimum heights
+    {
+        const { qtMock, workspaceMock, world } = init(config);
+        [client1, client2] = workspaceMock.createClientsWithWidths(300, 300);
+        // `minSize` is the minimum size of the client area, the frame is 20 pixels taller in the mock
+        const minFrameHeight = h2 - 10;
+        client2.minSize = new MockQmlSize(0, minFrameHeight - 20);
+        qtMock.fireShortcut("karousel-window-move-left");
+
+        // The minimum still fits, so the column is split evenly
+        {
+            const g1 = client1.getActualFrameGeometry();
+            const g2 = client2.getActualFrameGeometry();
+            Assert.equal(g1.height, h2);
+            Assert.equal(g2.height, h2);
+        }
+
+        // Resizing stops at the neighbor's minimum height instead of pushing it below it
+        {
+            qtMock.fireShortcut("karousel-focus-up");
+            qtMock.fireShortcut("karousel-window-height-increase-down");
+            const g1 = client1.getActualFrameGeometry();
+            const g2 = client2.getActualFrameGeometry();
+            Assert.equal(g1.height, tilingArea.height - gapV - minFrameHeight);
+            Assert.equal(g2.height, minFrameHeight);
+            Assert.assert(g1.height < h2 + stepSize); // clamped, not just increased by the step
+
+            qtMock.fireShortcut("karousel-window-height-increase-down");
+            const g1n = client1.getActualFrameGeometry();
+            const g2n = client2.getActualFrameGeometry();
+            Assert.equal(g1n, g1);
+            Assert.equal(g2n, g2);
+        }
+    }
+
+    // Columns too short for the minimum heights of all its windows
+    {
+        const { qtMock, workspaceMock, world } = init(config);
+        [client1, client2] = workspaceMock.createClientsWithWidths(300, 300);
+        client1.minSize = new MockQmlSize(0, 400);
+        client2.minSize = new MockQmlSize(0, 400);
+        qtMock.fireShortcut("karousel-window-move-left");
+
+        // The minimums can't be satisfied, but the windows still fit into the tiling area
+        const g1 = client1.getActualFrameGeometry();
+        const g2 = client2.getActualFrameGeometry();
+        Assert.equal(g1.height, h2);
+        Assert.equal(g2.height, h2);
+        Assert.equal(g2.y, g1.y + g1.height + gapV);
+        Assert.equal(g2.y + g2.height, tilingArea.y + tilingArea.height);
+    }
 });

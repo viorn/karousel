@@ -167,8 +167,20 @@ class Column {
             return;
         }
 
-        window.height += heightDelta;
-        otherWindow.height -= heightDelta;
+        // The two windows share a constant amount of height, so the divider between them can
+        // only move between the point where `window` hits its minimum height and the point
+        // where `otherWindow` does. Clamping the divider (instead of just applying the delta)
+        // keeps both windows above their minimums and their heights summing up to the same total.
+        const totalHeight = window.height + otherWindow.height;
+        const lowestHeight = Math.min(window.getMinHeight(), totalHeight);
+        const highestHeight = Math.max(totalHeight - otherWindow.getMinHeight(), lowestHeight);
+        const newHeight = clamp(window.height + heightDelta, lowestHeight, highestHeight);
+        if (newHeight === window.height) {
+            return;
+        }
+
+        window.height = newHeight;
+        otherWindow.height = totalHeight - newHeight;
 
         this.grid.desktop.onLayoutChanged();
     }
@@ -182,17 +194,97 @@ class Column {
             this.stacked = this.grid.config.stackColumnsByDefault;
         }
 
-        let remainingPixels = this.grid.desktop.tilingArea.height - (nWindows-1) * this.grid.config.gapsInnerVertical;
-        let remainingWindows = nWindows;
+        const availableHeight = Math.max(
+            0,
+            this.grid.desktop.tilingArea.height - (nWindows-1) * this.grid.config.gapsInnerVertical,
+        );
+
+        const minHeights: number[] = [];
+        let totalMinHeight = 0;
         for (const window of this.windows.iterator()) {
-            const windowHeight = Math.round(remainingPixels / remainingWindows);
-            window.height = windowHeight;
-            remainingPixels -= windowHeight;
-            remainingWindows--;
+            const minHeight = Math.min(window.getMinHeight(), availableHeight);
+            minHeights.push(minHeight);
+            totalMinHeight += minHeight;
         }
-        // TODO: respect min height
+
+        const heights = totalMinHeight <= availableHeight
+            ? Column.distributeHeights(minHeights, availableHeight)
+            : Column.shrinkProportionally(minHeights, availableHeight);
+
+        let i = 0;
+        for (const window of this.windows.iterator()) {
+            window.height = heights[i++];
+        }
 
         this.grid.desktop.onLayoutChanged();
+    }
+
+    // Splits the available height evenly, except for the windows which would end up below their
+    // minimum height — those get their minimum, and the rest of the windows share what's left.
+    // With no minimum heights this is just an even split, and the total always adds up exactly.
+    private static distributeHeights(minHeights: number[], availableHeight: number) {
+        const nWindows = minHeights.length;
+        const heights = new Array<number>(nWindows).fill(0);
+        const frozen = new Array<boolean>(nWindows).fill(false);
+        let remainingHeight = availableHeight;
+        let remainingWindows = nWindows;
+
+        // Freezing the most violated window first keeps the result independent of the window order.
+        for (;;) {
+            if (remainingWindows === 0) {
+                return heights;
+            }
+            const fairShare = Math.round(remainingHeight / remainingWindows);
+            let violatedWindow = -1;
+            let biggestDeficit = 0;
+            for (let i = 0; i < nWindows; ++i) {
+                if (frozen[i]) {
+                    continue;
+                }
+                const deficit = minHeights[i] - fairShare;
+                if (deficit > biggestDeficit) {
+                    biggestDeficit = deficit;
+                    violatedWindow = i;
+                }
+            }
+            if (violatedWindow === -1) {
+                break;
+            }
+            frozen[violatedWindow] = true;
+            heights[violatedWindow] = minHeights[violatedWindow];
+            remainingHeight -= minHeights[violatedWindow];
+            --remainingWindows;
+        }
+
+        for (let i = 0; i < nWindows; ++i) {
+            if (frozen[i]) {
+                continue;
+            }
+            const height = Math.round(remainingHeight / remainingWindows);
+            heights[i] = height;
+            remainingHeight -= height;
+            --remainingWindows;
+        }
+        return heights;
+    }
+
+    // The minimum heights don't all fit into the tiling area. At least one of them has to be
+    // violated anyway, so shrink the windows proportionally rather than letting them overflow.
+    private static shrinkProportionally(minHeights: number[], availableHeight: number) {
+        const weights = minHeights.some((minHeight) => minHeight > 0) ? minHeights : minHeights.map(() => 1);
+        let remainingHeight = availableHeight;
+        let remainingWeight = weights.reduce((total, weight) => total + weight, 0);
+
+        const heights: number[] = [];
+        for (const weight of weights) {
+            const height = remainingWeight > 0
+                ? clamp(Math.round(remainingHeight * weight / remainingWeight), 0, remainingHeight)
+                : 0;
+            heights.push(height);
+            remainingHeight -= height;
+            remainingWeight -= weight;
+        }
+        return heights;
     }
 
     public getFocusTaker() {

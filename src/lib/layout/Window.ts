@@ -23,6 +23,16 @@ class Window {
         column.onWindowAdded(this, true);
     }
 
+    public getMinHeight() {
+        const kwinClient = this.client.kwinClient;
+        // `minSize` is the minimum size of the client area, but `height` is the height of the
+        // frame, so the decorations have to be added to get the minimum frame height.
+        const frameHeight = kwinClient.frameGeometry.height;
+        const clientHeight = kwinClient.clientGeometry.height;
+        const decorations = frameHeight > clientHeight ? frameHeight - clientHeight : 0;
+        return Math.max(0, Math.round(kwinClient.minSize.height + decorations));
+    }
+
     public moveToColumn(targetColumn: Column, bottom: boolean, passFocus: FocusPassing.Type) {
         if (targetColumn === this.column) {
             return;

@@ -112,6 +112,25 @@ free on a stock KDE setup, without touching any KDE default:
 that `+` requires Shift on most layouts, so on a regular keyboard only the
 numpad `+` and `cycle-preset-widths` are practical ways to widen a column.
 
+### Minimum window height is respected
+
+Upstream splits a column evenly without looking at the clients' minimum heights
+(`// TODO: respect min height` in `src/lib/layout/Column.ts`), so a window with
+a large minimum (system settings, some GTK apps) would stick while being resized
+and could overflow the bottom of the tiling area. This fork:
+
+- clamps the divider between two windows in a column, so resizing stops when
+  either of them reaches its minimum instead of the neighbor being pushed below
+  it (`Column.adjustWindowHeight`),
+- hands the window with a large minimum its minimum height when a column is
+  rearranged, and splits the rest evenly among the other windows
+  (`Column.distributeHeights`),
+- shrinks the windows proportionally when the minimums of all windows in a
+  column don't fit into the tiling area at all, instead of overflowing it.
+
+With no minimum heights declared (the usual case) the layout is identical to
+upstream.
+
 ### Install
 
 ```bash
