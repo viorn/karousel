@@ -142,7 +142,6 @@ class Desktop {
     }
 
     public gestureScrollFinish(focusedWindow: Window|null) {
-        const initialScrollX = this.gestureScrollXInitial;
         const scrolledRight = this.scrollX > this.gestureScrollXInitial!;
         const scrolled = this.scrollX !== this.gestureScrollXInitial;
         this.gestureScrollXInitial = null;
@@ -156,15 +155,13 @@ class Desktop {
             const columnInView = this.grid.getColumnInView(visibleRange);
             if (columnInView !== null) {
                 const windowToFocus = columnInView.getWindowToFocus();
-                const wasFocused = windowToFocus.isFocused();
-                if (!wasFocused) {
+                if (!windowToFocus.isFocused()) {
                     windowToFocus.focus();
                 }
                 // Bring the window entirely into view even when the focus didn't change, and
                 // regardless of the `windowActivated` signal `focus()` relies on, which is
                 // asynchronous and doesn't always arrive in time. Same as focusing it by clicking.
                 this.scrollToColumn(columnInView, true);
-                Desktop.logGesture(initialScrollX, this.scrollX, visibleRange, columnInView, `wasFocused=${wasFocused} active="${Workspace.activeWindow?.caption ?? "null"}"`);
                 return;
             }
         }
@@ -177,18 +174,8 @@ class Desktop {
             if (focusTargetColumn !== null) {
                 focusTargetColumn.getWindowToFocus().focus();
                 this.scrollToColumn(focusTargetColumn, true);
-                Desktop.logGesture(initialScrollX, this.scrollX, visibleRange, focusTargetColumn, "fallback");
-                return;
             }
         }
-
-        Desktop.logGesture(initialScrollX, this.scrollX, visibleRange, null, `scrolled=${scrolled} focusEnabled=${this.config.gestureScrollFocus} focusedWindow=${focusedWindow === null ? "null" : `"${focusedWindow.client.kwinClient.caption}"`}`);
-    }
-
-    // TODO: temporary diagnostics, remove once the gesture focus is confirmed to work
-    private static logGesture(scrollXBefore: number|null, scrollXAfter: number, visibleRange: Range, column: Column|null, detail: string) {
-        const columnInfo = column === null ? "column=null" : `column=${column.getLeft()}..${column.getRight()}/w${column.getWidth()}`;
-        console.warn(`Karousel: gesture ${scrollXBefore}->${scrollXAfter} ${columnInfo} visible=${visibleRange.getLeft()}..${visibleRange.getRight()} ${detail}`);
     }
 
     public arrange() {

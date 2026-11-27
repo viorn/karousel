@@ -106,6 +106,20 @@ tests.register("Gesture scroll focus", 15, () => {
         Assert.assert(workspaceMock.activeWindow === client2);
     }
 
+    // The window in view is scrolled entirely into view even when it's already focused
+    {
+        const { qtMock, workspaceMock, world } = init(config);
+        const [client1, client2, client3] = workspaceMock.createClientsWithWidths(384, 768, 384);
+        qtMock.fireShortcut("karousel-focus-2"); // client2 focused and entirely visible
+        Assert.equal(client2.getActualFrameGeometry().x, tilingArea.x);
+
+        // scrolled 100 pixels to the right, client2 is still the closest to the center, but is cut
+        world.gestureScroll(100);
+        world.gestureScrollFinish();
+        Assert.assert(workspaceMock.activeWindow === client2);
+        Assert.equal(client2.getActualFrameGeometry().x, tilingArea.x, { message: "the focused window should be scrolled back into view" });
+    }
+
     // A gesture which doesn't scroll doesn't change the focus
     {
         const { qtMock, workspaceMock, world } = init(config);
