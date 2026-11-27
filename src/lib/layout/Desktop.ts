@@ -156,19 +156,15 @@ class Desktop {
             const columnInView = this.grid.getColumnInView(visibleRange);
             if (columnInView !== null) {
                 const windowToFocus = columnInView.getWindowToFocus();
-                // Focus the window the user is looking at, even if the previously focused window is
-                // still visible. Otherwise the focus stays on a window the user isn't looking at,
-                // and it gets restored (along with the scroll position) when the user leaves this
-                // desktop and comes back.
-                if (!windowToFocus.isFocused()) {
+                const wasFocused = windowToFocus.isFocused();
+                if (!wasFocused) {
                     windowToFocus.focus();
                 }
                 // Bring the window entirely into view even when the focus didn't change, and
                 // regardless of the `windowActivated` signal `focus()` relies on, which is
                 // asynchronous and doesn't always arrive in time. Same as focusing it by clicking.
                 this.scrollToColumn(columnInView, true);
-                // TODO: temporary diagnostics, remove once the gesture focus is confirmed working
-                console.warn(`Karousel: gesture scroll ${initialScrollX} -> ${this.scrollX}, column ${columnInView.getLeft()}..${columnInView.getRight()} (w ${columnInView.getWidth()}), visible ${visibleRange.getLeft()}..${visibleRange.getRight()}`);
+                Desktop.logGesture(initialScrollX, this.scrollX, visibleRange, columnInView, `wasFocused=${wasFocused} active="${Workspace.activeWindow?.caption ?? "null"}"`);
                 return;
             }
         }
@@ -181,8 +177,18 @@ class Desktop {
             if (focusTargetColumn !== null) {
                 focusTargetColumn.getWindowToFocus().focus();
                 this.scrollToColumn(focusTargetColumn, true);
+                Desktop.logGesture(initialScrollX, this.scrollX, visibleRange, focusTargetColumn, "fallback");
+                return;
             }
         }
+
+        Desktop.logGesture(initialScrollX, this.scrollX, visibleRange, null, `scrolled=${scrolled} focusEnabled=${this.config.gestureScrollFocus} focusedWindow=${focusedWindow === null ? "null" : `"${focusedWindow.client.kwinClient.caption}"`}`);
+    }
+
+    // TODO: temporary diagnostics, remove once the gesture focus is confirmed to work
+    private static logGesture(scrollXBefore: number|null, scrollXAfter: number, visibleRange: Range, column: Column|null, detail: string) {
+        const columnInfo = column === null ? "column=null" : `column=${column.getLeft()}..${column.getRight()}/w${column.getWidth()}`;
+        console.warn(`Karousel: gesture ${scrollXBefore}->${scrollXAfter} ${columnInfo} visible=${visibleRange.getLeft()}..${visibleRange.getRight()} ${detail}`);
     }
 
     public arrange() {
