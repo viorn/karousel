@@ -146,6 +146,13 @@ and could overflow the bottom of the tiling area. This fork:
 With no minimum heights declared (the usual case) the layout is identical to
 upstream.
 
+> **Reloading the script breaks touchpad gestures.** KWin 6.3's `SwipeGestureHandler`
+> has an empty destructor and never unregisters its gesture, so after
+> `unloadScript` + `loadDeclarativeScript` the gesture registry is left with a
+> dangling pointer and swipes stop working until KWin restarts. Install changes
+> take effect after a re-login, not after a D-Bus reload (`karousel-toolbox`
+> prints a warning about it).
+
 ### Install
 
 ```bash

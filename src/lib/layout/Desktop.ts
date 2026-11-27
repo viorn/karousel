@@ -142,6 +142,7 @@ class Desktop {
     }
 
     public gestureScrollFinish(focusedWindow: Window|null) {
+        const initialScrollX = this.gestureScrollXInitial;
         const scrolledRight = this.scrollX > this.gestureScrollXInitial!;
         const scrolled = this.scrollX !== this.gestureScrollXInitial;
         this.gestureScrollXInitial = null;
@@ -155,13 +156,19 @@ class Desktop {
             const columnInView = this.grid.getColumnInView(visibleRange);
             if (columnInView !== null) {
                 const windowToFocus = columnInView.getWindowToFocus();
+                // Focus the window the user is looking at, even if the previously focused window is
+                // still visible. Otherwise the focus stays on a window the user isn't looking at,
+                // and it gets restored (along with the scroll position) when the user leaves this
+                // desktop and comes back.
                 if (!windowToFocus.isFocused()) {
                     windowToFocus.focus();
-                    // `focus()` only scrolls the window into view through the `windowActivated`
-                    // signal, which is asynchronous and doesn't always arrive in time, so scroll
-                    // explicitly — the same way focusing the window by clicking it does.
-                    this.scrollToColumn(columnInView, true);
                 }
+                // Bring the window entirely into view even when the focus didn't change, and
+                // regardless of the `windowActivated` signal `focus()` relies on, which is
+                // asynchronous and doesn't always arrive in time. Same as focusing it by clicking.
+                this.scrollToColumn(columnInView, true);
+                // TODO: temporary diagnostics, remove once the gesture focus is confirmed working
+                console.warn(`Karousel: gesture scroll ${initialScrollX} -> ${this.scrollX}, column ${columnInView.getLeft()}..${columnInView.getRight()} (w ${columnInView.getWidth()}), visible ${visibleRange.getLeft()}..${visibleRange.getRight()}`);
                 return;
             }
         }
