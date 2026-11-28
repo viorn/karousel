@@ -25,6 +25,9 @@ install: build
 uninstall:
 	kpackagetool6 --type=KWin/Script --remove=karousel
 
+toolbox:
+	install -Dm755 ./bin/karousel-toolbox $(HOME)/.local/bin/karousel-toolbox
+
 package: build
 	tar -czf ./karousel_${subst .,_,${VERSION}}.tar.gz ./package --transform s/package/karousel/
 

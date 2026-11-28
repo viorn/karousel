@@ -1,0 +1,937 @@
+#!/usr/bin/env bash
+# karousel-toolbox — установка/удаление KWin-скрипта Karousel с бэкапами
+# и сохранением пользовательских сочетаний клавиш.
+#
+#   karousel-toolbox install   [--src DIR] [--fast|--no-build] [--yes]
+#   karousel-toolbox uninstall [--keep-shortcuts] [--forget-shortcuts] [--restore-config] [--yes]
+#   karousel-toolbox status
+#   karousel-toolbox restore [BACKUP_DIR] [--yes]
+#
+# Ничего не пишет вне: ${XDG_CONFIG_HOME:-~/.config}, ${XDG_DATA_HOME:-~/.local/share}
+# (пакет ставится штатным kpackagetool6) и $HOME/.local/share/karousel-toolbox.
+
+set -euo pipefail
+
+SCRIPT_NAME="karousel-toolbox"
+PLUGIN_ID="karousel"
+PLUGIN_NAME="Karousel"
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
+KWINRC="$CONFIG_DIR/kwinrc"
+GSA="$CONFIG_DIR/kglobalshortcutsrc"
+
+STATE_DIR="$DATA_DIR/karousel-toolbox"
+BACKUP_ROOT="$STATE_DIR/backups"
+SHORTCUTS_SAVED="$STATE_DIR/karousel-shortcuts.kconf"
+
+DEFAULT_SRC="$HOME/Data/my/sources/karousel"
+
+# ---------------------------------------------------------------- вывод
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_BLD=$'\033[1m'; C_OFF=$'\033[0m'
+else
+    C_RED=''; C_GRN=''; C_YEL=''; C_BLD=''; C_OFF=''
+fi
+
+info() { printf '%s\n' "$*"; }
+step() { printf '%s==>%s %s\n' "$C_BLD" "$C_OFF" "$*"; }
+ok()   { printf '%s ok %s %s\n' "$C_GRN" "$C_OFF" "$*"; }
+warn() { printf '%s  !  %s %s\n' "$C_YEL" "$C_OFF" "$*" >&2; }
+die()  { printf '%s err %s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+ASSUME_YES=0
+confirm() {
+    [ "$ASSUME_YES" = 1 ] && return 0
+    local answer
+    printf '%s?%s %s [y/N] ' "$C_YEL" "$C_OFF" "$*" >&2
+    read -r answer </dev/tty || return 1
+    case "$answer" in [yYдД]*) return 0 ;; *) return 1 ;; esac
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------- kwin / dbus
+
+kwin_available() { have qdbus6 && qdbus6 org.kde.KWin >/dev/null 2>&1; }
+
+kwin_reconfigure() {
+    if kwin_available; then
+        timeout 10 qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1 \
+            || warn "не удалось вызвать org.kde.KWin reconfigure — изменения применятся после перезапуска KWin"
+    else
+        warn "KWin не запущен (или недоступен по D-Bus) — изменения применятся при следующем входе в сеанс"
+    fi
+}
+
+script_loaded() {
+    kwin_available || return 1
+    local out
+    out=$(timeout 10 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded "$PLUGIN_ID" 2>/dev/null) || return 1
+    [ "$out" = "true" ]
+}
+
+wait_loaded() { # wait_loaded true|false
+    local want=$1 i
+    for i in $(seq 1 20); do
+        if [ "$want" = true ]; then
+            script_loaded && return 0
+        else
+            script_loaded || return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+script_unload() {
+    kwin_available || return 0
+    timeout 10 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$PLUGIN_ID" >/dev/null 2>&1 || true
+}
+
+# KWin кэширует список доступных скриптов на старте: пакет, поставленный во время
+# работы KWin, через reconfigure не подхватывается — нужна явная загрузка (так делает KCM).
+script_main_qml() {
+    local d
+    for d in "$DATA_DIR/kwin/scripts/$PLUGIN_ID" "/usr/share/kwin/scripts/$PLUGIN_ID"; do
+        if [ -f "$d/contents/ui/main.qml" ]; then printf '%s\n' "$d/contents/ui/main.qml"; return 0; fi
+    done
+    return 1
+}
+
+script_load() {
+    kwin_available || return 1
+    local main_qml
+    main_qml=$(script_main_qml) || return 1
+    timeout 10 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadDeclarativeScript "$main_qml" "$PLUGIN_ID" >/dev/null 2>&1 || true
+    timeout 10 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null 2>&1 || true
+    script_loaded || return 1
+    warn_gesture_reload
+    return 0
+}
+
+# KWin 6.3: у SwipeGestureHandler пустой деструктор — жест не снимается с регистрации,
+# а его объект живёт в unique_ptr обработчика. После выгрузки скрипта в реестре жестов
+# остаётся висячий указатель, и свайпы по тачпаду перестают работать до перезапуска KWin.
+warn_gesture_reload() {
+    warn "свайпы по тачпаду не работают до перезапуска KWin (перезахода в сеанс):"
+    warn "KWin не снимает регистрацию SwipeGestureHandler при выгрузке скрипта."
+}
+
+# KWin сохраняет сочетания в kglobalshortcutsrc асинхронно (обычно за 1-3 с).
+wait_shortcuts_persist() {
+    local i
+    for i in $(seq 1 12); do
+        [ "$(kconf count-shortcuts "$GSA")" -gt 0 ] && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+shortcuts_registered() { # сколько шорткатов karousel* знает kglobalaccel
+    kwin_available || { echo 0; return; }
+    timeout 10 qdbus6 org.kde.kglobalaccel /component/kwin org.kde.kglobalaccel.Component.shortcutNames 2>/dev/null \
+        | grep -c '^karousel-' || true
+}
+
+package_installed() {
+    have kpackagetool6 || return 1
+    kpackagetool6 --type=KWin/Script --list 2>/dev/null | awk '{print $1}' | grep -qx "$PLUGIN_ID"
+}
+
+# ---------------------------------------------------------------- kconf-хирургия
+# Только строчные операции: kconfig не парсим и не перезаписываем целиком,
+# поэтому чужие ключи/эскейпы/порядок не страдают.
+
+kconf() { # kconf <команда> ...
+    python3 - "$@" <<'PY'
+import os, sys, tempfile
+
+cmd = sys.argv[1]
+
+def read(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding='utf-8', errors='surrogateescape') as f:
+        return f.read().splitlines(keepends=True)
+
+def write(path, lines):
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix='.kconf.')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape') as f:
+            f.writelines(lines)
+        if os.path.exists(path):
+            os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        os.replace(tmp, path)
+    except BaseException:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+
+def section_of(line):
+    s = line.strip()
+    if s.startswith('['):
+        return s
+    return None
+
+def in_group(line, group):
+    """строка относится к группе group (или None вне групп)"""
+    return line.startswith(group)
+
+if cmd == 'dump-shortcuts':      # dump-shortcuts <src> <dst>
+    src, dst = sys.argv[2], sys.argv[3]
+    out, group = [], None
+    for line in read(src):
+        sec = section_of(line)
+        if sec is not None:
+            group = sec
+            continue
+        if group == '[kwin]' and line.startswith('karousel-'):
+            out.append(line if line.endswith('\n') else line + '\n')
+    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+    write(dst, out)
+    print(len(out))
+
+elif cmd == 'strip-shortcuts':   # strip-shortcuts <file>
+    path = sys.argv[2]
+    lines, out, group, removed = read(path), [], None, 0
+    for line in lines:
+        sec = section_of(line)
+        if sec is not None:
+            group = sec
+            out.append(line)
+            continue
+        if group == '[kwin]' and line.startswith('karousel-'):
+            removed += 1
+            continue
+        out.append(line)
+    if removed:
+        write(path, out)
+    print(removed)
+
+elif cmd == 'merge-shortcuts':   # merge-shortcuts <file> <saved>
+    path, saved_path = sys.argv[2], sys.argv[3]
+    saved = [l for l in read(saved_path) if l.strip() and not l.lstrip().startswith('#')]
+    if not saved:
+        print(0); sys.exit(0)
+    lines = read(path)
+    existing = {l.split('=', 1)[0].strip() for l in lines if '=' in l}
+    missing = [l for l in saved if l.split('=', 1)[0].strip() not in existing]
+    if not missing:
+        print(0); sys.exit(0)
+
+    out, group, done, seen_kwin = [], None, False, False
+    for line in lines:
+        sec = section_of(line)
+        if sec is not None:
+            if group == '[kwin]' and not done:
+                out.extend(missing); done = True
+            group = sec
+            if sec == '[kwin]':
+                seen_kwin = True
+            out.append(line)
+            continue
+        out.append(line)
+    if group == '[kwin]' and not done:
+        out.extend(missing); done = True
+    if not seen_kwin:
+        if out and not out[-1].endswith('\n'):
+            out[-1] += '\n'
+        out.append('\n[kwin]\n')
+        out.extend(missing)
+    write(path, out)
+    print(len(missing))
+
+elif cmd == 'remove-group':      # remove-group <file> <group-name>
+    path, name = sys.argv[2], sys.argv[3]
+    lines, out, skipping, removed = read(path), [], False, 0
+    for line in lines:
+        sec = section_of(line)
+        if sec is not None:
+            skipping = (sec == '[%s]' % name) or sec.startswith('[%s][' % name)
+        if not skipping:
+            out.append(line)
+        else:
+            removed += 1
+    # не оставляем двойную пустую строку на месте удалённой группы
+    cleaned = []
+    for line in out:
+        if line.strip() == '' and cleaned and cleaned[-1].strip() == '':
+            continue
+        cleaned.append(line)
+    if removed:
+        write(path, cleaned)
+    print(removed)
+
+elif cmd == 'count-shortcuts':   # count-shortcuts <file>
+    path = sys.argv[2]
+    group, n = None, 0
+    for line in read(path):
+        sec = section_of(line)
+        if sec is not None:
+            group = sec
+            continue
+        if group == '[kwin]' and line.startswith('karousel-'):
+            n += 1
+    print(n)
+
+else:
+    sys.exit('unknown kconf command: %s' % cmd)
+PY
+}
+
+# ---------------------------------------------------------------- бэкапы
+
+timestamp() { date +%Y%m%d-%H%M%S; }
+
+make_backup() { # make_backup <label> — печатает путь бэкапа
+    local label=${1:-manual}
+    local dir="$BACKUP_ROOT/$(timestamp)-$label"
+    mkdir -p "$dir"
+    [ -f "$KWINRC" ] && cp -p "$KWINRC" "$dir/kwinrc"
+    [ -f "$GSA" ] && cp -p "$GSA" "$dir/kglobalshortcutsrc"
+    if package_installed; then
+        printf 'package was installed\n' > "$dir/package-was-installed"
+    fi
+    printf '%s\n' "$dir"
+}
+
+# самый свежий бэкап, сделанный ПЕРЕД установкой = состояние «как было до Karousel»
+preinstall_backup() {
+    local d
+    d=$(ls -1d "$BACKUP_ROOT"/*-preinstall/ 2>/dev/null | sort | tail -1) || return 0
+    [ -n "$d" ] && printf '%s\n' "${d%/}"
+    return 0
+}
+
+latest_backup() {
+    local d
+    d=$(ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null | sort | tail -1) || return 0
+    [ -n "$d" ] && printf '%s\n' "${d%/}"
+    return 0
+}
+
+# ---------------------------------------------------------------- установка
+
+find_src() {
+    local explicit=${1:-}
+    if [ -n "$explicit" ]; then
+        [ -f "$explicit/package/metadata.json" ] || die "в '$explicit' нет package/metadata.json"
+        printf '%s\n' "$explicit"; return
+    fi
+    if [ -n "${KAROUSEL_SRC:-}" ] && [ -f "$KAROUSEL_SRC/package/metadata.json" ]; then
+        printf '%s\n' "$KAROUSEL_SRC"; return
+    fi
+    if [ -f "$PWD/package/metadata.json" ]; then
+        printf '%s\n' "$PWD"; return
+    fi
+    if [ -f "$DEFAULT_SRC/package/metadata.json" ]; then
+        printf '%s\n' "$DEFAULT_SRC"; return
+    fi
+    die "не нашёл исходники Karousel: укажи --src DIR или KAROUSEL_SRC"
+}
+
+build_package() { # build_package <src> fast|full|none
+    local src=$1 mode=$2
+    case "$mode" in
+        none)
+            [ -f "$src/package/contents/code/main.js" ] \
+                || die "--no-build, но $src/package/contents/code/main.js отсутствует"
+            ;;
+        fast)
+            step "сборка (быстрая: tsc + генерация конфига)"
+            have pnpm || die "нужен pnpm для сборки (или используй --no-build с уже собранным пакетом)"
+            ( cd "$src" \
+                && pnpm exec tsc -p ./src/main --outFile ./package/contents/code/main.js \
+                && mkdir -p ./package/contents/config \
+                && ./run-ts.sh ./src/generators/config > ./package/contents/config/main.xml ) \
+                || die "сборка не удалась"
+            ;;
+        full)
+            step "сборка (make build: lint + тесты + tsc)"
+            have make || die "нужен make (или используй --fast / --no-build)"
+            ( cd "$src" && make build ) || die "сборка не удалась"
+            ;;
+    esac
+    [ -f "$src/package/contents/code/main.js" ] || die "в пакете нет contents/code/main.js"
+}
+
+cmd_install() {
+    local src_arg='' build_mode='full'
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --src) src_arg=${2:?--src требует аргумент}; shift 2 ;;
+            --src=*) src_arg=${1#--src=}; shift ;;
+            --fast) build_mode='fast'; shift ;;
+            --no-build) build_mode='none'; shift ;;
+            -y|--yes) ASSUME_YES=1; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "неизвестный аргумент: $1" ;;
+        esac
+    done
+
+    have kpackagetool6 || die "не найден kpackagetool6 (пакет plasma-framework / kpackage)"
+
+    local src; src=$(find_src "$src_arg")
+    local pkg="$src/package"
+
+    step "исходники: $src"
+    build_package "$src" "$build_mode"
+
+    mkdir -p "$STATE_DIR"
+    local backup; backup=$(make_backup preinstall)
+    ok "бэкап конфигов (как было до установки): $backup"
+
+    local was_installed=0
+    package_installed && was_installed=1
+    if [ "$was_installed" = 1 ]; then
+        script_unload   # чтобы KWin подхватил новый код, а не оставил старый
+        step "обновляю пакет KWin-скрипта"
+        kpackagetool6 --type=KWin/Script --upgrade="$pkg" >/dev/null || die "kpackagetool6 --upgrade не удался"
+    else
+        step "устанавливаю пакет KWin-скрипта"
+        kpackagetool6 --type=KWin/Script --install="$pkg" >/dev/null || die "kpackagetool6 --install не удался"
+    fi
+    ok "пакет установлен: $DATA_DIR/kwin/scripts/$PLUGIN_ID"
+
+    # вернуть ранее сохранённые (в т.ч. переназначенные вручную) клавиши Karousel
+    if [ -s "$SHORTCUTS_SAVED" ]; then
+        local restored
+        restored=$(kconf merge-shortcuts "$GSA" "$SHORTCUTS_SAVED")
+        if [ "${restored:-0}" -gt 0 ]; then
+            ok "восстановлено сохранённых сочетаний Karousel: $restored"
+        fi
+    fi
+
+    step "включаю скрипт"
+    kwriteconfig6 --file kwinrc --group Plugins --key karouselEnabled true
+    kwin_reconfigure
+
+    if kwin_available; then
+        if wait_loaded true; then
+            ok "скрипт загружен в KWin ($PLUGIN_NAME запущен)"
+        else
+            # KWin не пересканирует каталог скриптов на лету — грузим явно, как KCM
+            script_load >/dev/null 2>&1 || true
+        fi
+        if wait_loaded true; then
+            ok "скрипт загружен в KWin ($PLUGIN_NAME запущен)"
+            if wait_shortcuts_persist; then
+                ok "сочетаний клавиш Karousel: $(kconf count-shortcuts "$GSA") (зарегистрировано в kglobalaccel: $(shortcuts_registered))"
+            fi
+        else
+            warn "скрипт включён в конфиге, но KWin его не подхватил."
+            warn "Открой Параметры системы → Управление окнами → Скрипты KWin и нажми «Применить», либо перезайди в сеанс."
+        fi
+    fi
+
+    info ""
+    info "${C_BLD}Готово.${C_OFF} Что дальше:"
+    info "  • Проверь клавиши: Параметры системы → Сочетания клавиш → $PLUGIN_NAME"
+    info "    Занятые системой дефолты (Meta+D, Meta+S, Meta+Ctrl+A, Meta+1..9) скрипт сам не забирает —"
+    info "    они просто останутся за KDE; переназначить можно вручную."
+    info "  • Настройки (ширины, отступы, правила): Параметры системы → Скрипты KWin → $PLUGIN_NAME → Настроить"
+    info "    или из терминала: $SCRIPT_NAME config show | config set KEY VALUE"
+    info "  • Свайп по тачпаду (3 пальца): $SCRIPT_NAME gesture on"
+    info "  • Откат: karousel-uninstall          Полный откат конфигов: karousel-toolbox restore"
+}
+
+# ---------------------------------------------------------------- удаление
+
+cmd_uninstall() {
+    local keep_shortcuts=0 forget_shortcuts=0 restore_config=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --keep-shortcuts) keep_shortcuts=1; shift ;;
+            --forget-shortcuts) forget_shortcuts=1; shift ;;
+            --restore-config) restore_config=1; shift ;;
+            -y|--yes) ASSUME_YES=1; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "неизвестный аргумент: $1" ;;
+        esac
+    done
+
+    confirm "Выключить и удалить $PLUGIN_NAME, убрав его сочетания клавиш? (твои биндинги KDE не пострадают)" \
+        || { info "отменено"; exit 0; }
+
+    mkdir -p "$STATE_DIR"
+    local backup; backup=$(make_backup uninstall)
+    ok "бэкап конфигов (состояние на момент удаления): $backup"
+
+    # 1. выключить скрипт (чтобы он ничего не дописывал)
+    step "выключаю скрипт"
+    kwriteconfig6 --file kwinrc --group Plugins --key karouselEnabled false
+    kwin_reconfigure
+    if kwin_available; then
+        script_unload
+        if wait_loaded false; then
+            ok "скрипт выгружен из работающего KWin"
+        else
+            warn "KWin сообщает, что скрипт всё ещё загружен — перезайди в сеанс, если это важно"
+        fi
+    fi
+
+    # 2. сохранить сочетания Karousel (для восстановления при следующей установке)
+    if [ "$forget_shortcuts" = 1 ]; then
+        rm -f "$SHORTCUTS_SAVED"
+        info "  сохранённые сочетания Karousel забыты (--forget-shortcuts)"
+    else
+        local saved=0
+        [ -f "$GSA" ] && saved=$(kconf dump-shortcuts "$GSA" "$SHORTCUTS_SAVED")
+        cp -f "$SHORTCUTS_SAVED" "$backup/karousel-shortcuts.kconf" 2>/dev/null || true
+        ok "сочетания Karousel сохранены ($saved шт.): $SHORTCUTS_SAVED"
+    fi
+
+    # 3. убрать записи karousel-* из kglobalshortcutsrc
+    if [ "$keep_shortcuts" = 1 ]; then
+        info "  записи karousel-* оставлены в kglobalshortcutsrc (--keep-shortcuts)"
+    elif [ -f "$GSA" ]; then
+        local removed
+        removed=$(kconf strip-shortcuts "$GSA")
+        ok "удалено записей karousel-* из [kwin]: $removed"
+    fi
+
+    # 4. убрать настройки скрипта из kwinrc
+    if [ -f "$KWINRC" ]; then
+        local g
+        g=$(kconf remove-group "$KWINRC" "Script-$PLUGIN_ID")
+        [ "${g:-0}" -gt 0 ] && ok "удалена секция [Script-$PLUGIN_ID] из kwinrc" || true
+    fi
+
+    # 5. удалить пакет
+    if package_installed; then
+        step "удаляю пакет"
+        kpackagetool6 --type=KWin/Script --remove="$PLUGIN_ID" >/dev/null || die "kpackagetool6 --remove не удался"
+        ok "пакет удалён"
+    else
+        info "  пакет уже не установлен"
+    fi
+
+    # 6. опционально: полный откат конфигов до состояния перед установкой
+    if [ "$restore_config" = 1 ]; then
+        local pre; pre=$(preinstall_backup)
+        if [ -n "$pre" ]; then
+            restore_files "$pre"
+        else
+            warn "бэкап «до установки» не найден — конфиги не менялись (все ручные биндинги KDE на месте)"
+            kwin_reconfigure
+        fi
+    fi
+
+    info ""
+    info "${C_BLD}Готово.${C_OFF} Открытые окна остались там, где были (Karousel хранит раскладку только в памяти)."
+    info "  Твои сочетания KDE не менялись — Karousel никогда не забирал занятые клавиши."
+    if [ "$keep_shortcuts" = 0 ] && [ "$forget_shortcuts" = 0 ]; then
+        info "  При следующей установке сохранённые клавиши Karousel будут возвращены автоматически."
+    fi
+    if [ "$keep_shortcuts" = 0 ]; then
+        info "  Если какая-то клавиша Karousel продолжала «нажиматься в пустоту» — перезайди в сеанс,"
+        info "  KWin/kglobalaccel держат в памяти старый список до перезапуска."
+    fi
+    info "  Вернуть конфиги как до установки: karousel-toolbox restore"
+}
+
+# ---------------------------------------------------------------- восстановление конфигов
+
+restore_files() { # restore_files <backup-dir>
+    local dir=$1
+    [ -d "$dir" ] || die "бэкап не найден: $dir"
+    [ -f "$dir/kwinrc" ] || [ -f "$dir/kglobalshortcutsrc" ] || die "в $dir нет конфигов"
+
+    step "откатываю конфиги из $dir"
+    local dir2; dir2="$BACKUP_ROOT/pre-restore-$(timestamp)"
+    mkdir -p "$dir2"
+    [ -f "$KWINRC" ] && cp -p "$KWINRC" "$dir2/kwinrc"
+    [ -f "$GSA" ] && cp -p "$GSA" "$dir2/kglobalshortcutsrc"
+    ok "текущее состояние сохранено: $dir2"
+
+    [ -f "$dir/kwinrc" ] && cp -p "$dir/kwinrc" "$KWINRC"
+    [ -f "$dir/kglobalshortcutsrc" ] && cp -p "$dir/kglobalshortcutsrc" "$GSA"
+
+    # если пакет не установлен, не оставляем «висячее» состояние из старого бэкапа
+    if ! package_installed; then
+        kwriteconfig6 --file kwinrc --group Plugins --key karouselEnabled false
+        local n=0
+        [ -f "$GSA" ] && n=$(kconf strip-shortcuts "$GSA")
+        if [ "${n:-0}" -gt 0 ]; then
+            info "  пакет не установлен → убрано $n записей karousel-* и karouselEnabled=false" >&2
+        fi
+    fi
+
+    kwin_reconfigure
+    ok "конфиги восстановлены (сочетания клавиш применятся сразу, часть настроек — после перезахода)"
+}
+
+cmd_restore() {
+    local dir=''
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -y|--yes) ASSUME_YES=1; shift ;;
+            -h|--help) usage; exit 0 ;;
+            -*) die "неизвестный аргумент: $1" ;;
+            *) dir=$1; shift ;;
+        esac
+    done
+    [ -n "$dir" ] || dir=$(preinstall_backup)
+    [ -n "$dir" ] || dir=$(latest_backup)
+    [ -n "$dir" ] || die "бэкапов нет ($BACKUP_ROOT)"
+    warn "Будут перезаписаны $KWINRC и $GSA версиями из: $dir"
+    warn "Все ручные изменения этих файлов после бэкапа будут потеряны."
+    confirm "Продолжить?" || { info "отменено"; exit 0; }
+    restore_files "$dir"
+}
+
+# ---------------------------------------------------------------- статус
+
+cmd_status() {
+    info "${C_BLD}$PLUGIN_NAME — состояние${C_OFF}"
+    if package_installed; then
+        info "  пакет:        установлен ($DATA_DIR/kwin/scripts/$PLUGIN_ID)"
+    else
+        info "  пакет:        не установлен"
+    fi
+    local en
+    en=$(kreadconfig6 --file kwinrc --group Plugins --key karouselEnabled 2>/dev/null || true)
+    info "  kwinrc:       ${en:-<не задано>}"
+    if kwin_available; then
+        if script_loaded; then info "  в KWin:       загружен и работает"
+        else info "  в KWin:       не загружен"; fi
+    else
+        info "  в KWin:       KWin недоступен по D-Bus"
+    fi
+    local n=0
+    if [ -f "$GSA" ]; then n=$(kconf count-shortcuts "$GSA"); fi
+    info "  шорткаты:     записей karousel-* = $n"
+    if kwin_available && script_loaded; then
+        info "                зарегистрировано в kglobalaccel: $(shortcuts_registered)"
+    fi
+    if [ -s "$SHORTCUTS_SAVED" ]; then
+        info "  сохранено:    $(grep -c . "$SHORTCUTS_SAVED" 2>/dev/null || echo 0) сочетаний ($SHORTCUTS_SAVED)"
+    fi
+    local nb=0
+    [ -d "$BACKUP_ROOT" ] && nb=$(ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null | wc -l)
+    info "  бэкапов:      $nb ($BACKUP_ROOT)"
+    if [ "$nb" -gt 0 ]; then info "  последний:    $(latest_backup)"; fi
+    local pre; pre=$(preinstall_backup)
+    if [ -n "$pre" ]; then info "  «до установки»: $pre"; fi
+    exit 0
+}
+
+# ---------------------------------------------------------------- настройки скрипта
+
+SCRIPT_GROUP="Script-$PLUGIN_ID"
+
+script_settings() { # текущие настройки скрипта из kwinrc
+    [ -f "$KWINRC" ] || return 0
+    python3 - "$KWINRC" "$SCRIPT_GROUP" <<'PY'
+import sys
+path, group = sys.argv[1], sys.argv[2]
+want = '[%s]' % group
+cur = None
+for line in open(path, encoding='utf-8', errors='surrogateescape'):
+    s = line.strip()
+    if s.startswith('['):
+        cur = s
+        continue
+    if cur == want and '=' in s:
+        print(s)
+PY
+}
+
+# Karousel читает конфиг один раз в init(): после изменения настроек
+# нужен именно перезапуск скрипта, `reconfigure` не помогает.
+script_restart() {
+    if ! package_installed; then
+        warn "пакет не установлен — настройки сохранены, но применить их не к чему"
+        return 0
+    fi
+    if ! kwin_available; then
+        warn "KWin недоступен — настройки применятся при следующем входе в сеанс"
+        return 0
+    fi
+    script_unload
+    if script_load; then
+        ok "скрипт перезапущен с новыми настройками"
+    else
+        warn "не удалось перезапустить скрипт — выключи/включи его в Параметрах или перезайди в сеанс"
+    fi
+}
+
+cmd_config() {
+    local action=${1:-show}
+    case "$action" in
+        show|'')
+            info "${C_BLD}Настройки $PLUGIN_NAME${C_OFF} (секция [$SCRIPT_GROUP] в kwinrc)"
+            local cur; cur=$(script_settings)
+            if [ -z "$cur" ]; then
+                info "  (не заданы — используются значения по умолчанию)"
+            else
+                while IFS= read -r line; do info "  $line"; done <<< "$cur"
+            fi
+            info ""
+            info "  Изменить: $SCRIPT_NAME config set KEY VALUE [KEY VALUE ...]"
+            info "  Свайп по тачпаду: $SCRIPT_NAME gesture on|off"
+            ;;
+        set)
+            shift
+            [ $# -ge 2 ] || die "использование: $SCRIPT_NAME config set KEY VALUE [KEY VALUE ...]"
+            while [ $# -ge 2 ]; do
+                kwriteconfig6 --file kwinrc --group "$SCRIPT_GROUP" --key "$1" "$2"
+                ok "$1 = $2"
+                shift 2
+            done
+            script_restart
+            ;;
+        *) die "использование: $SCRIPT_NAME config [show|set KEY VALUE ...]" ;;
+    esac
+}
+
+cmd_gesture() {
+    local on=true
+    case "${1:-on}" in
+        on|true|1|yes)  on=true ;;
+        off|false|0|no) on=false ;;
+        *) die "использование: $SCRIPT_NAME gesture on|off" ;;
+    esac
+    kwriteconfig6 --file kwinrc --group "$SCRIPT_GROUP" --key gestureScroll "$on"
+    ok "gestureScroll = $on"
+    script_restart
+    if [ "$on" = true ]; then
+        info "  Свайп: 3 пальца влево/вправо по тачпаду."
+        info "  Скорость: $SCRIPT_NAME config set gestureScrollStep 1920   (px за полный жест)"
+        info "  Инверсия: $SCRIPT_NAME config set gestureScrollInvert true (natural scrolling)"
+        info "  Если 3 пальца уже заняты жестом Plasma — см. настройки сенсорной панели,"
+        info "  либо поставь fingerCount: 4 в package/contents/ui/main.qml и переустанови."
+    fi
+}
+
+# ---------------------------------------------------------------- диагностика шорткатов
+
+cmd_shortcuts() {
+    local show_all=0 free_list=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --all|-a) show_all=1; shift ;;
+            --free|-f) free_list=1; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "неизвестный аргумент: $1" ;;
+        esac
+    done
+    local src=''
+    src=$(find_src 2>/dev/null) || src=''
+    python3 - "$GSA" "$src" "$show_all" "$free_list" <<'PY'
+import glob, os, re, sys
+
+gsa, srcdir, show_all, free_list = sys.argv[1], sys.argv[2], sys.argv[3] == '1', sys.argv[4] == '1'
+
+
+def split_seqs(value):
+    return [x.strip() for x in value.replace('\\t', '\t').split('\t')
+            if x.strip() and x.strip() != 'none']
+
+
+def parse_kconf(path):
+    """[(section, key, [seqs], description)]"""
+    rows, sect = [], ''
+    if not os.path.exists(path):
+        return rows
+    for line in open(path, encoding='utf-8', errors='surrogateescape'):
+        line = line.rstrip('\n')
+        if line.startswith('['):
+            sect = line
+            continue
+        if '=' not in line:
+            continue
+        k, v = line.split('=', 1)
+        parts = v.split(',')
+        desc = parts[2] if len(parts) > 2 else ''
+        rows.append((sect, k, split_seqs(parts[0] if parts else ''), desc))
+    return rows
+
+
+def parse_defaults(srcdir):
+    """дефолтные клавиши Karousel из src/lib/keyBindings/definition.ts"""
+    path = os.path.join(srcdir, 'src/lib/keyBindings/definition.ts')
+    if not srcdir or not os.path.exists(path):
+        return {}
+    text = open(path, encoding='utf-8').read()
+    stop = r'(?:(?!\n\s*name:\s*").)*?'      # не выходим за пределы текущего объекта
+    d = {}
+    for m in re.finditer(r'name:\s*"([^"]+)"' + stop + r'defaultKeySequence:\s*"([^"]+)"', text, re.S):
+        d[m.group(1)] = m.group(2)
+    for m in re.finditer(r'name:\s*"([^"]*\{\}[^"]*)"' + stop + r'defaultModifiers:\s*"([^"]+)"'
+                         + stop + r'fKeys:\s*(true|false)', text, re.S):
+        name, mods, fkeys = m.group(1), m.group(2), m.group(3) == 'true'
+        upto, prefix = (12, 'F') if fkeys else (9, '')
+        for i in range(1, 13):
+            d[name.replace('{}', str(i))] = (mods + '+' + prefix + str(i)) if i <= upto else ''
+    return d
+
+
+def service_shortcuts(rows):
+    """шорткаты сервисов из .desktop (X-KDE-Shortcuts) + переопределения из конфига"""
+    overrides = {}
+    for sect, key, seqs, _desc in rows:
+        if sect.startswith('[services]['):
+            service = sect[len('[services]['):-1]
+            overrides[(service, key)] = seqs
+
+    found = {}
+    dirs = ['/usr/share/applications',
+            os.path.expanduser('~/.local/share/applications')]
+    for d in dirs:
+        for path in sorted(glob.glob(os.path.join(d, '*.desktop'))):
+            service = os.path.basename(path)
+            action, names = '_launch', {}
+            entries = {}
+            try:
+                text = open(path, encoding='utf-8', errors='replace').read()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith('[') and line.endswith(']'):
+                    action = line[1:-1]
+                    continue
+                if '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                if k == 'Name' and action.startswith('Desktop Action '):
+                    names[action] = v
+                elif k == 'X-KDE-Shortcuts':
+                    entries['_launch' if action.startswith('Desktop Action ') is False else action] = \
+                        [x.strip() for x in v.split(',') if x.strip()]
+            for act, seqs in entries.items():
+                key_name = '_launch' if act == '_launch' else act.replace('Desktop Action ', '')
+                if (service, key_name) in overrides:
+                    seqs = overrides[(service, key_name)]
+                label = names.get(act, key_name)
+                for seq in seqs:
+                    found.setdefault(seq, []).append(f'{service} → {label}')
+    return found
+
+
+rows = parse_kconf(gsa)
+defaults = parse_defaults(srcdir)
+
+kar, owners = {}, {}
+for sect, key, seqs, _desc in rows:
+    if key.startswith('karousel-'):
+        kar[key[len('karousel-'):]] = seqs
+    else:
+        for seq in seqs:
+            owners.setdefault(seq, []).append(f'{sect} → {key}')
+for seq, who in service_shortcuts(rows).items():
+    owners.setdefault(seq, []).extend(who)
+
+if not kar:
+    print('  записей karousel-* в %s нет (скрипт ещё не запускался?)' % gsa)
+    sys.exit(0)
+
+assigned = {a: k for a, k in kar.items() if k}
+empty = sorted(a for a, k in kar.items() if not k)
+conflicts, nodefault = [], []
+for a in empty:
+    default = defaults.get(a, '')
+    if default and default in owners:
+        conflicts.append((a, default, '; '.join(sorted(set(owners[default])))))
+    elif default:
+        conflicts.append((a, default, 'свободна (можно назначить «По умолчанию» в KCM)'))
+    else:
+        nodefault.append(a)
+
+print('  всего действий: %d   с клавишами: %d   без клавиш: %d' % (len(kar), len(assigned), len(empty)))
+if conflicts:
+    print('\n  Без клавиши — комбинацию держит кто-то другой:')
+    for a, default, who in conflicts:
+        print('    %-32s %-18s ← %s' % (a, default, who))
+if nodefault:
+    print('\n  Без клавиши — у Karousel нет дефолта, назначай сам:')
+    print('    ' + ', '.join(nodefault))
+if show_all:
+    print('\n  Назначено:')
+    for a in sorted(assigned):
+        print('    %-32s %s' % (a, ', '.join(assigned[a])))
+else:
+    print('\n  С клавишами: ' + ', '.join(f'{a}={v[0]}' for a, v in sorted(assigned.items())))
+
+if free_list:
+    letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    cands = [f'{p}+{c}' for p in ('Meta', 'Meta+Shift', 'Meta+Ctrl', 'Meta+Alt') for c in letters]
+    cands += [f'Meta+Ctrl+{i}' for i in range(1, 10)] + [f'Meta+Shift+{i}' for i in range(1, 10)]
+    kar_keys = {seq for seqs in kar.values() for seq in seqs}
+    free = [c for c in cands if c not in owners and c not in kar_keys]
+    print('\n  Свободно (не занято ни KDE, ни сервисами вроде Spectacle, ни Karousel):')
+    for line_start in ('Meta+', 'Meta+Shift+', 'Meta+Ctrl+', 'Meta+Alt+'):
+        group = [c for c in free if c.startswith(line_start) and len(c) == len(line_start) + 1]
+        if group:
+            print('    %-12s %s' % (line_start + '*', ', '.join(g.replace(line_start, '') for g in group)))
+    digits = [c for c in free if re.match(r'^(Meta\+(Ctrl|Shift)\+\d+)$', c)]
+    if digits:
+        print('    Ctrl/Shift+N %s' % ', '.join(digits))
+
+print('\n  Поменять: Параметры системы → Сочетания клавиш → Karousel')
+print('  Клавишу под Karousel можно и освободить: аналогичное действие в KWin/plasmashell/Spectacle → очистить.')
+print('  Правка kglobalshortcutsrc руками применится только после перезахода (сервис шорткатов живёт внутри KWin).')
+PY
+}
+
+# ---------------------------------------------------------------- CLI# ---------------------------------------------------------------- CLI
+
+usage() {
+    cat <<EOF
+$SCRIPT_NAME — установка/удаление KWin-скрипта $PLUGIN_NAME с бэкапами конфигов.
+
+  $SCRIPT_NAME install   [--src DIR] [--fast|--no-build] [-y]
+      --src DIR     исходники Karousel (по умолчанию: \$KAROUSEL_SRC, cwd, $DEFAULT_SRC)
+      --fast        сборка без lint/тестов (tsc + генерация конфига)
+      --no-build    не собирать, ставить уже собранный package/
+
+  $SCRIPT_NAME uninstall [--keep-shortcuts] [--forget-shortcuts] [--restore-config] [-y]
+      --keep-shortcuts    не удалять записи karousel-* из kglobalshortcutsrc
+      --forget-shortcuts  не сохранять сочетания Karousel для следующей установки
+      --restore-config    вернуть kwinrc/kglobalshortcutsrc в состояние ДО установки
+
+  $SCRIPT_NAME status
+  $SCRIPT_NAME restore [BACKUP_DIR]
+      по умолчанию берётся бэкап «до установки» (самый старый ...-preinstall)
+
+  $SCRIPT_NAME config [show]
+  $SCRIPT_NAME config set KEY VALUE [KEY VALUE ...]
+      показать/изменить настройки скрипта ([Script-karousel] в kwinrc) и перезапустить его
+  $SCRIPT_NAME gesture on|off
+      включить/выключить прокрутку ленты свайпом по тачпаду (3 пальца)
+  $SCRIPT_NAME shortcuts [--all] [--free]
+      какие сочетания реально назначены, какие нет и кто занял конфликтующие клавиши
+      --free  дополнительно показать реально свободные комбинации
+
+  Конфиги: ${KWINRC/#$HOME/~}, ${GSA/#$HOME/~}
+  Состояние и бэкапы: ${STATE_DIR/#$HOME/~}
+EOF
+}
+
+main() {
+    have python3 || die "нужен python3"
+    mkdir -p "$STATE_DIR"
+    exec 9>"$STATE_DIR/.lock"
+    have flock && flock -n 9 || true
+
+    local cmd=${1:-status}
+    [ $# -gt 0 ] && shift
+    case "$cmd" in
+        install)   cmd_install "$@" ;;
+        config)    cmd_config "$@" ;;
+        gesture)   cmd_gesture "$@" ;;
+        shortcuts) cmd_shortcuts "$@" ;;
+        uninstall|remove) cmd_uninstall "$@" ;;
+        status)    cmd_status ;;
+        restore)   cmd_restore "$@" ;;
+        -h|--help|help) usage ;;
+        *) usage; exit 1 ;;
+    esac
+}
+
+main "$@"

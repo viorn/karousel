@@ -158,5 +158,18 @@ upstream.
 
 ```bash
 make install            # build (lint + tests + tsc) and install into ~/.local/share/kwin/scripts
-karousel-toolbox ...    # optional: wrapper used to manage install/uninstall/backups
 ```
+
+`bin/karousel-toolbox` is a wrapper used to manage the script on a live session:
+`install` (with backups of `kwinrc`/`kglobalshortcutsrc`), `uninstall`
+(`--keep-shortcuts`, `--forget-shortcuts`, `--restore-config`), `status`,
+`restore`, `config show|set`, `gesture on|off`, `shortcuts [--all|--free]`.
+Install it once with:
+
+```bash
+make toolbox            # copies it to ~/.local/bin/karousel-toolbox
+```
+
+Note that the toolbox reloads the script through D-Bus after installing, which
+breaks touchpad gestures until KWin restarts (see the note above); it prints a
+warning about that.
