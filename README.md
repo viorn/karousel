@@ -157,8 +157,18 @@ upstream.
 ### Install
 
 ```bash
-make install            # build (lint + tests + tsc) and install into ~/.local/share/kwin/scripts
+./install.sh            # build (lint + tests + tsc), install into ~/.local/share/kwin/scripts, enable in kwinrc
+./install.sh --no-build # install ./package as is (needs package/contents/code/main.js)
+./install.sh --toolbox  # also install bin/karousel-toolbox into ~/.local/bin
+
+./uninstall.sh                     # remove the package and disable it in kwinrc
+./uninstall.sh --forget-shortcuts  # also drop the karousel-* keybindings (backed up first)
 ```
+
+Both scripts only touch `~/.local/share/kwin/scripts`, `~/.config/kwinrc` and (with
+`--forget-shortcuts`) `kglobalshortcutsrc`; they never talk to a running KWin, so
+nothing happens until the next re-login. The raw targets are `make install`,
+`make uninstall` and `make package` (release tarball).
 
 `bin/karousel-toolbox` is a wrapper used to manage the script on a live session:
 `install` (with backups of `kwinrc`/`kglobalshortcutsrc`), `uninstall`
